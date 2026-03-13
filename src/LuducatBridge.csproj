@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net462</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>LuducatBridge</RootNamespace>
+    <AssemblyName>LuducatBridge</AssemblyName>
+    <Version>1.0.0</Version>
+    <Authors>shakeyourbunny</Authors>
+    <Description>luducat Bridge plugin for Playnite — enables game launching via IPC</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="PlayniteSDK" Version="6.11.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="AdysTech.CredentialManager" Version="2.5.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="System.Xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Settings\BridgeSettingsView.xaml" />
+    <None Remove="Settings\BridgeSettingsView.xaml" />
+  </ItemGroup>
+
+</Project>

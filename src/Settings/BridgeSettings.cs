@@ -62,7 +62,18 @@ namespace LuducatBridge
 
         public void EndEdit()
         {
-            _plugin.SavePluginSettings(this);
+            // Save only serializable fields — avoid self-referencing loop from
+            // runtime callbacks that capture plugin references.
+            var dto = new BridgeSettings
+            {
+                Port = Port,
+                AlwaysAllow = AlwaysAllow,
+                DebugLogging = DebugLogging,
+                ShareFavorites = ShareFavorites,
+                ShareTags = ShareTags,
+                SharePlaytime = SharePlaytime,
+            };
+            _plugin.SavePluginSettings(dto);
         }
 
         public bool VerifySettings(out List<string> errors)

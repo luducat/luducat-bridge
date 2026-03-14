@@ -16,6 +16,8 @@ namespace LuducatBridge
     public class LaunchHandler
     {
         private readonly IPlayniteAPI _api;
+        private readonly BridgeSettings _settings;
+        private readonly ILogger _logger;
 
         // Store name → Playnite library plugin source name mapping
         private static readonly Dictionary<string, string[]> StoreSourceMap =
@@ -26,9 +28,11 @@ namespace LuducatBridge
             { "epic", new[] { "Epic", "epic", "Epic Games Store" } },
         };
 
-        public LaunchHandler(IPlayniteAPI api)
+        public LaunchHandler(IPlayniteAPI api, BridgeSettings settings, ILogger logger)
         {
             _api = api;
+            _settings = settings;
+            _logger = logger;
         }
 
         /// <summary>
@@ -40,10 +44,13 @@ namespace LuducatBridge
             string store = launchMsg["store"]?.ToString() ?? "";
             string storeId = launchMsg["store_id"]?.ToString() ?? "";
 
+            _logger.Info($"Launch request: store={store}, id={storeId}");
+
             var game = ResolveGame(store, storeId);
 
             if (game == null)
             {
+                _logger.Warn($"Game not found: store={store}, id={storeId}");
                 return CreateLaunchResult(nonce, "not_found",
                     errorCode: ErrorCodes.GAME_NOT_FOUND,
                     errorMessage: $"No game with store={store}, store_id={storeId} in Playnite library");
@@ -51,6 +58,7 @@ namespace LuducatBridge
 
             if (!game.IsInstalled)
             {
+                _logger.Warn($"Game not installed: {game.Id}");
                 return CreateLaunchResult(nonce, "not_installed",
                     playniteId: game.Id.ToString(),
                     gameName: game.Name,
@@ -61,6 +69,7 @@ namespace LuducatBridge
             {
                 _api.StartGame(game.Id);
 
+                _logger.Info($"Launch result: started (store={store}, id={storeId})");
                 return CreateLaunchResult(nonce, "started",
                     playniteId: game.Id.ToString(),
                     gameName: game.Name,
@@ -68,6 +77,7 @@ namespace LuducatBridge
             }
             catch (Exception ex)
             {
+                _logger.Error(ex, $"Launch failed: store={store}, id={storeId}");
                 return CreateLaunchResult(nonce, "failed",
                     playniteId: game.Id.ToString(),
                     gameName: game.Name,

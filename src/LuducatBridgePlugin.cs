@@ -36,9 +36,9 @@ namespace LuducatBridge
 
         public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
         {
-            _launchHandler = new LaunchHandler(PlayniteApi);
-            _pairingManager = new PairingManager(_settings);
-            _sessionManager = new SessionManager(_pairingManager);
+            _launchHandler = new LaunchHandler(PlayniteApi, _settings, _logger);
+            _pairingManager = new PairingManager(_settings, _logger);
+            _sessionManager = new SessionManager(_pairingManager, _settings, _logger);
 
             _server = new BridgeServer(
                 _settings,

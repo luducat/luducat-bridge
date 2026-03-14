@@ -2,6 +2,7 @@
 
 using System;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace LuducatBridge
@@ -87,8 +88,23 @@ namespace LuducatBridge
         private const uint X509_ASN_ENCODING = 0x00000001;
         private const uint CERT_X500_NAME_STR = 3;
         private const uint PROV_RSA_FULL = 1;
-        private const uint CRYPT_EXPORTABLE = 0x00000001;
+        private const uint PROV_RSA_AES = 24;
         private const uint AT_KEYEXCHANGE = 1;
+
+        // Provider configurations to try in order (modern → legacy)
+        private static readonly ProviderConfig[] Providers = new[]
+        {
+            new ProviderConfig("Microsoft Enhanced RSA and AES Cryptographic Provider", PROV_RSA_AES),
+            new ProviderConfig("Microsoft Strong Cryptographic Provider", PROV_RSA_FULL),
+            new ProviderConfig(null, PROV_RSA_FULL),
+        };
+
+        private struct ProviderConfig
+        {
+            public string Name;
+            public uint Type;
+            public ProviderConfig(string name, uint type) { Name = name; Type = type; }
+        }
 
         public static X509Certificate2 CreateSelfSigned(string subjectName)
         {
@@ -104,19 +120,6 @@ namespace LuducatBridge
             var nameBlob = new CRYPT_DATA_BLOB();
             nameBlob.cbData = encodedSize;
 
-            string containerName = "luducat-bridge-" + Guid.NewGuid().ToString("N");
-
-            var keyProvInfo = new CRYPT_KEY_PROV_INFO
-            {
-                pwszContainerName = containerName,
-                pwszProvName = null,
-                dwProvType = PROV_RSA_FULL,
-                dwFlags = CRYPT_EXPORTABLE,
-                cProvParam = 0,
-                rgProvParam = IntPtr.Zero,
-                dwKeySpec = AT_KEYEXCHANGE,
-            };
-
             var startTime = SYSTEMTIME.FromDateTime(DateTime.UtcNow);
             var endTime = SYSTEMTIME.FromDateTime(DateTime.UtcNow.AddYears(10));
 
@@ -126,30 +129,73 @@ namespace LuducatBridge
                 Marshal.Copy(encodedName, 0, namePtr, encodedName.Length);
                 nameBlob.pbData = namePtr;
 
-                IntPtr certContext = CertCreateSelfSignCertificate(
-                    IntPtr.Zero,
-                    ref nameBlob,
-                    0,
-                    ref keyProvInfo,
-                    IntPtr.Zero,
-                    ref startTime,
-                    ref endTime,
-                    IntPtr.Zero);
-
-                if (certContext == IntPtr.Zero)
+                // Try each provider: pre-create exportable RSA key via managed
+                // RSACryptoServiceProvider, then CertCreateSelfSignCertificate
+                // reuses the existing key in the named container.
+                Exception lastError = null;
+                foreach (var prov in Providers)
                 {
-                    int error = Marshal.GetLastWin32Error();
-                    throw new System.ComponentModel.Win32Exception(error,
-                        $"CertCreateSelfSignCertificate failed: 0x{error:X8}");
+                    try
+                    {
+                        string containerName = "luducat-bridge-" + Guid.NewGuid().ToString("N");
+
+                        // Pre-create exportable RSA key in named container
+                        var cspParams = new CspParameters(
+                            (int)prov.Type,
+                            prov.Name)
+                        {
+                            KeyContainerName = containerName,
+                            KeyNumber = (int)AT_KEYEXCHANGE,
+                        };
+                        using (var rsa = new RSACryptoServiceProvider(2048, cspParams))
+                        {
+                            rsa.PersistKeyInCsp = true;
+                        }
+
+                        var keyProvInfo = new CRYPT_KEY_PROV_INFO
+                        {
+                            pwszContainerName = containerName,
+                            pwszProvName = prov.Name,
+                            dwProvType = prov.Type,
+                            dwFlags = 0,
+                            cProvParam = 0,
+                            rgProvParam = IntPtr.Zero,
+                            dwKeySpec = AT_KEYEXCHANGE,
+                        };
+
+                        IntPtr certContext = CertCreateSelfSignCertificate(
+                            IntPtr.Zero,
+                            ref nameBlob,
+                            0,
+                            ref keyProvInfo,
+                            IntPtr.Zero,
+                            ref startTime,
+                            ref endTime,
+                            IntPtr.Zero);
+
+                        if (certContext != IntPtr.Zero)
+                        {
+                            var cert = new X509Certificate2(certContext);
+                            CertFreeCertificateContext(certContext);
+
+                            byte[] pfxBytes = cert.Export(X509ContentType.Pfx, "luducat-bridge");
+                            return new X509Certificate2(pfxBytes, "luducat-bridge",
+                                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+                        }
+
+                        int error = Marshal.GetLastWin32Error();
+                        lastError = new System.ComponentModel.Win32Exception(error,
+                            $"CertCreateSelfSignCertificate failed with provider " +
+                            $"'{prov.Name ?? "(default)"}' type={prov.Type}: 0x{error:X8}");
+                    }
+                    catch (Exception ex)
+                    {
+                        lastError = ex;
+                    }
                 }
 
-                var cert = new X509Certificate2(certContext);
-                CertFreeCertificateContext(certContext);
-
-                // Re-import with exportable private key
-                byte[] pfxBytes = cert.Export(X509ContentType.Pfx, "luducat-bridge");
-                return new X509Certificate2(pfxBytes, "luducat-bridge",
-                    X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+                throw lastError ?? new InvalidOperationException(
+                    "All certificate provider configurations failed");
             }
             finally
             {

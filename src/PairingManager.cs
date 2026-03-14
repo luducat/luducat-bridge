@@ -12,6 +12,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Playnite.SDK;
 
 namespace LuducatBridge
 {
@@ -26,6 +27,7 @@ namespace LuducatBridge
         private const string CERT_CREDENTIAL_TARGET = "luducat-bridge-cert";
 
         private readonly BridgeSettings _settings;
+        private readonly ILogger _logger;
 
         // Key material
         private byte[] _ourPrivateKey;
@@ -54,9 +56,10 @@ namespace LuducatBridge
             get { return _grantedPermissions; }
         }
 
-        public PairingManager(BridgeSettings settings)
+        public PairingManager(BridgeSettings settings, ILogger logger)
         {
             _settings = settings;
+            _logger = logger;
             LoadCredentials();
         }
 
@@ -77,13 +80,20 @@ namespace LuducatBridge
             // Try loading from credential store
             _serverCert = LoadCertificate();
             if (_serverCert != null)
+            {
+                if (_settings.DebugLogging)
+                    _logger.Debug("Server certificate loaded from credential store");
                 return _serverCert;
+            }
 
             // Generate self-signed certificate via Windows cert store API
             _serverCert = SelfSignedCertHelper.CreateSelfSigned("CN=luducat-bridge");
 
             if (_serverCert != null)
+            {
+                _logger.Info("New self-signed TLS certificate generated");
                 SaveCertificate(_serverCert);
+            }
 
             return _serverCert;
         }
@@ -99,9 +109,12 @@ namespace LuducatBridge
             string peerPubKeyB64 = helloMsg["public_key"]?.ToString() ?? "";
             string peerVersion = helloMsg["version"]?.ToString() ?? "";
 
+            _logger.Info("Pairing handshake started");
+
             // ── Pairing lock: reject if already paired ────────────────
             if (IsPaired)
             {
+                _logger.Warn("Pairing rejected: already paired");
                 await SendError(stream, "pair_hello_reply", nonce,
                     ErrorCodes.PAIR_REJECTED,
                     "Already paired. Unpair first.");
@@ -111,6 +124,7 @@ namespace LuducatBridge
             // ── Rate limiting: check lockout ──────────────────────────
             if (DateTime.UtcNow < _verifyLockoutUntil)
             {
+                _logger.Warn("Pairing rejected: rate limited");
                 await SendError(stream, "pair_hello_reply", nonce,
                     ErrorCodes.RATE_LIMITED,
                     "Too many failed attempts. Try again later.");
@@ -120,6 +134,7 @@ namespace LuducatBridge
             // Version check
             if (!peerVersion.StartsWith("1."))
             {
+                _logger.Warn($"Pairing rejected: incompatible version {peerVersion}");
                 await SendError(stream, "pair_hello_reply", nonce,
                     ErrorCodes.VERSION_MISMATCH,
                     $"Incompatible protocol version: {peerVersion}");
@@ -132,6 +147,8 @@ namespace LuducatBridge
             _ourPublicKey = keyPair.PublicKey;
             _ourCngPrivateBlob = keyPair.CngPrivateBlob;
             _peerPublicKey = Convert.FromBase64String(peerPubKeyB64);
+
+            _logger.Info("Key exchange complete");
 
             // Send our public key
             var reply = new PairHelloReply
@@ -159,6 +176,7 @@ namespace LuducatBridge
                 _failedVerifyAttempts++;
                 if (_failedVerifyAttempts >= MAX_VERIFY_ATTEMPTS)
                 {
+                    _logger.Warn($"Rate limited — locked for {VERIFY_LOCKOUT_DURATION.TotalMinutes} minutes");
                     _verifyLockoutUntil = DateTime.UtcNow + VERIFY_LOCKOUT_DURATION;
                     await SendError(stream, "pair_verify_reply", verifyNonce,
                         ErrorCodes.RATE_LIMITED,
@@ -166,6 +184,7 @@ namespace LuducatBridge
                 }
                 else
                 {
+                    _logger.Warn($"Verification code mismatch (attempt {_failedVerifyAttempts}/{MAX_VERIFY_ATTEMPTS})");
                     await SendError(stream, "pair_verify_reply", verifyNonce,
                         ErrorCodes.PAIR_REJECTED, "Verification code mismatch");
                 }
@@ -175,6 +194,7 @@ namespace LuducatBridge
 
             // Reset rate limit on success
             _failedVerifyAttempts = 0;
+            _logger.Info("Verification codes match");
 
             // Send verify reply
             var verifyReply = new PairVerifyReply
@@ -222,12 +242,15 @@ namespace LuducatBridge
             byte[] verifyPayload = CryptoHelper.Concat(bridgeChallenge, _ourPublicKey);
             if (!CryptoHelper.Verify(_peerPublicKey, verifyPayload, clientSig))
             {
+                _logger.Warn("Challenge signature invalid (possible MITM)");
                 await SendError(stream, "pair_challenge_verify", respNonce,
                     ErrorCodes.CHALLENGE_FAILED,
                     "Client signature verification failed — possible MITM");
                 ClearKeyMaterial();
                 return;
             }
+
+            _logger.Info("Challenge verified");
 
             // Send challenge verified confirmation
             var challengeOk = new BridgeResponse
@@ -250,6 +273,8 @@ namespace LuducatBridge
             // Only "launch" is currently supported
             _grantedPermissions = permissions.Where(p => string.Equals(p, "launch", StringComparison.Ordinal)).ToList();
 
+            _logger.Info($"Permissions granted: [{string.Join(", ", _grantedPermissions)}]");
+
             var permReply = new PairPermissionsReply
             {
                 Type = "pair_permissions_reply",
@@ -270,6 +295,8 @@ namespace LuducatBridge
             // Store credentials
             SaveCredentials();
 
+            _logger.Info("Pairing complete — credentials saved");
+
             var completeReply = new BridgeResponse
             {
                 Type = "pair_complete_reply",
@@ -280,6 +307,7 @@ namespace LuducatBridge
 
         public void Unpair()
         {
+            _logger.Info("Unpair requested — credentials cleared");
             ClearKeyMaterial();
             DeleteCredentials();
         }

@@ -187,6 +187,7 @@ namespace LuducatBridge
             {
                 if (!_session.ValidateAuth(firstMsg))
                 {
+                    _logger.Warn("Auth session rejected");
                     string nonce = firstMsg["nonce"]?.ToString() ?? "";
                     await WriteMessage(sslStream,
                         CreateErrorResponse("auth_reply", nonce,
@@ -248,24 +249,34 @@ namespace LuducatBridge
                 string msgType = msg["type"]?.ToString() ?? "";
                 string nonce = msg["nonce"]?.ToString() ?? "";
 
+                if (_settings.DebugLogging)
+                    _logger.Debug($"Received message type={msgType}, nonce={nonce}");
+
                 switch (msgType)
                 {
                     case "ping":
+                        if (_settings.DebugLogging)
+                            _logger.Debug($"Sending pong, nonce={nonce}");
                         await WriteMessage(stream, CreateSimpleResponse("pong", nonce));
                         break;
 
                     case "launch":
                         var launchResult = _launcher.HandleLaunch(msg);
+                        if (_settings.DebugLogging)
+                            _logger.Debug($"Sending launch_result, nonce={nonce}");
                         await WriteMessage(stream, launchResult);
                         break;
 
                     case "status":
+                        if (_settings.DebugLogging)
+                            _logger.Debug($"Sending status_reply, nonce={nonce}");
                         var statusReply = CreateStatusReply(nonce);
                         await WriteMessage(stream, statusReply);
                         break;
 
                     case "disconnect":
-                        _logger.Info("Client requested disconnect");
+                        string reason = msg["reason"]?.ToString() ?? "unknown";
+                        _logger.Info($"Client requested disconnect (reason: {reason})");
                         return;
 
                     case "unpair":

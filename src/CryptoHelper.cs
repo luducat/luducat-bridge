@@ -3,6 +3,7 @@
 using System;
 using System.Linq;
 using System.Security.Cryptography;
+using Playnite.SDK;
 
 namespace LuducatBridge
 {
@@ -15,6 +16,8 @@ namespace LuducatBridge
     /// </summary>
     public static class CryptoHelper
     {
+        private static readonly ILogger _logger = LogManager.GetLogger();
+
         private const int TOTP_PERIOD = 30;
         private const int TOTP_WINDOW = 1;
 
@@ -188,7 +191,11 @@ namespace LuducatBridge
         /// </summary>
         public static KeyPair GenerateKeyPair()
         {
-            using (var key = CngKey.Create(CngAlgorithm.ECDsaP256))
+            var keyParams = new CngKeyCreationParameters
+            {
+                ExportPolicy = CngExportPolicies.AllowExport | CngExportPolicies.AllowPlaintextExport,
+            };
+            using (var key = CngKey.Create(CngAlgorithm.ECDsaP256, null, keyParams))
             using (var ecdsa = new ECDsaCng(key))
             {
                 byte[] privateBlob = key.Export(CngKeyBlobFormat.EccPrivateBlob);
@@ -230,7 +237,10 @@ namespace LuducatBridge
         public static bool Verify(byte[] publicKeyBytes, byte[] data, byte[] signature)
         {
             if (publicKeyBytes == null || publicKeyBytes.Length != 65 || publicKeyBytes[0] != 0x04)
+            {
+                _logger.Warn($"Signature verification failed: invalid public key format (len={publicKeyBytes?.Length ?? 0})");
                 return false;
+            }
 
             // Build CNG EccPublicBlob: header + X + Y
             byte[] publicBlob = new byte[CNG_HEADER_SIZE + P256_KEY_SIZE * 2];
@@ -241,11 +251,22 @@ namespace LuducatBridge
             Array.Copy(publicKeyBytes, 1, publicBlob, CNG_HEADER_SIZE, P256_KEY_SIZE);
             Array.Copy(publicKeyBytes, 33, publicBlob, CNG_HEADER_SIZE + P256_KEY_SIZE, P256_KEY_SIZE);
 
-            using (var key = CngKey.Import(publicBlob, CngKeyBlobFormat.EccPublicBlob))
-            using (var ecdsa = new ECDsaCng(key))
+            try
             {
-                ecdsa.HashAlgorithm = CngAlgorithm.Sha256;
-                return ecdsa.VerifyData(data, signature);
+                using (var key = CngKey.Import(publicBlob, CngKeyBlobFormat.EccPublicBlob))
+                using (var ecdsa = new ECDsaCng(key))
+                {
+                    ecdsa.HashAlgorithm = CngAlgorithm.Sha256;
+                    bool result = ecdsa.VerifyData(data, signature);
+                    if (!result)
+                        _logger.Warn($"Signature verification failed: cryptographic mismatch (sig_len={signature.Length})");
+                    return result;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, $"Signature verification error (sig_len={signature.Length})");
+                return false;
             }
         }
 

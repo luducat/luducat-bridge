@@ -2,7 +2,7 @@ Id: LuducatBridge
 Name: luducat Bridge
 Author: shakeyourbunny
 Version: 1.1.0
-Module: src/LuducatBridgePlugin.cs
+Module: LuducatBridge.dll
 Type: GenericPlugin
 Icon: icon.png
 Links:

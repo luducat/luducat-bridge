@@ -78,21 +78,18 @@ namespace LuducatBridge
 
         // ── Verification Code ────────────────────────────────────────
 
-        /// <summary>
-        /// Derive 6-digit verification code from both public keys.
-        /// Keys are sorted lexicographically before derivation.
-        /// </summary>
         public static string DeriveVerificationCode(byte[] ourKey, byte[] peerKey)
         {
-            return DeriveVerificationCode(ourKey, peerKey, null);
+            return DeriveVerificationCode(ourKey, peerKey, null, 0);
         }
 
-        /// <summary>
-        /// Derive 6-digit verification code from both public keys and
-        /// optionally the server TLS certificate (DER bytes).
-        /// Binding the cert hash into the IKM prevents MITM cert substitution.
-        /// </summary>
         public static string DeriveVerificationCode(byte[] ourKey, byte[] peerKey, byte[] serverCertDer)
+        {
+            return DeriveVerificationCode(ourKey, peerKey, serverCertDer, 0);
+        }
+
+        public static string DeriveVerificationCode(
+            byte[] ourKey, byte[] peerKey, byte[] serverCertDer, long tsWindow)
         {
             byte[][] sorted = new[] { ourKey, peerKey }
                 .OrderBy(k => k, new ByteArrayComparer())
@@ -100,7 +97,6 @@ namespace LuducatBridge
 
             byte[] ikm = Concat(sorted[0], sorted[1]);
 
-            // Bind server certificate into IKM if available
             if (serverCertDer != null && serverCertDer.Length > 0)
             {
                 byte[] certHash;
@@ -111,9 +107,18 @@ namespace LuducatBridge
                 ikm = Concat(ikm, certHash);
             }
 
+            if (tsWindow != 0)
+            {
+                byte[] tsBytes = BitConverter.GetBytes(tsWindow);
+                if (BitConverter.IsLittleEndian)
+                    Array.Reverse(tsBytes);
+                ikm = Concat(ikm, tsBytes);
+            }
+
+            ikm = HkdfExtract(Protocol._kx, ikm);
+
             byte[] codeBytes = HkdfDeriveKey(ikm, 4, Protocol.VERIFY_SALT, Protocol.VERIFY_INFO);
 
-            // Big-endian uint32
             if (BitConverter.IsLittleEndian)
                 Array.Reverse(codeBytes);
             uint codeInt = BitConverter.ToUInt32(codeBytes, 0);

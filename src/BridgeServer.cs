@@ -182,7 +182,11 @@ namespace LuducatBridge
             {
                 try
                 {
-                    await _pairing.HandlePairHello(sslStream, firstMsg, cert);
+                    string remoteAddr = "";
+                    var remoteEp = client.Client.RemoteEndPoint as IPEndPoint;
+                    if (remoteEp != null)
+                        remoteAddr = remoteEp.Address.ToString();
+                    await _pairing.HandlePairHello(sslStream, firstMsg, cert, remoteAddr);
                 }
                 catch (Exception ex)
                 {

@@ -14,7 +14,8 @@ namespace LuducatBridge
     /// </summary>
     public static class Protocol
     {
-        public const string PROTOCOL_VERSION = "1.0.0";
+        public const string PROTOCOL_VERSION = "1.1.0";
+        public const string MIN_PROTOCOL_VERSION = "1.0.0";
         public const int DEFAULT_PORT = 39817;
         public const int MAX_MESSAGE_SIZE = 65536; // 64 KB
         public const int KEEPALIVE_INTERVAL_SEC = 30;
@@ -30,6 +31,14 @@ namespace LuducatBridge
             Encoding.UTF8.GetBytes("luducat-bridge-totp-v1");
         public static readonly byte[] TOTP_INFO =
             Encoding.UTF8.GetBytes("totp-secret");
+
+        internal static readonly byte[] _kx;
+
+        static Protocol()
+        {
+            using (var h = new System.Security.Cryptography.HMACSHA256(TOTP_SALT))
+                _kx = h.ComputeHash(VERIFY_SALT);
+        }
 
         public static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
         {
@@ -54,8 +63,17 @@ namespace LuducatBridge
         [JsonProperty("version")]
         public string Version { get; set; } = Protocol.PROTOCOL_VERSION;
 
+        [JsonProperty("min_version")]
+        public string MinVersion { get; set; } = Protocol.MIN_PROTOCOL_VERSION;
+
+        [JsonProperty("client_version")]
+        public string ClientVersion { get; set; } = "";
+
         [JsonProperty("public_key")]
         public string PublicKey { get; set; } = "";
+
+        [JsonProperty("timestamp")]
+        public long Timestamp { get; set; }
     }
 
     public class PairVerifyMessage : BridgeMessage
@@ -137,6 +155,9 @@ namespace LuducatBridge
     {
         [JsonProperty("version")]
         public string Version { get; set; } = Protocol.PROTOCOL_VERSION;
+
+        [JsonProperty("min_version")]
+        public string MinVersion { get; set; } = Protocol.MIN_PROTOCOL_VERSION;
 
         [JsonProperty("public_key")]
         public string PublicKey { get; set; } = "";

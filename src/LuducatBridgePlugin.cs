@@ -5,6 +5,7 @@ using Playnite.SDK.Events;
 using Playnite.SDK.Plugins;
 using System;
 using System.Collections.Generic;
+using System.Windows;
 using System.Windows.Controls;
 
 namespace LuducatBridge
@@ -53,6 +54,21 @@ namespace LuducatBridge
                 return "Paired (not connected)";
             };
             _settings.OnUnpairRequested = () => { _pairingManager?.Unpair(); };
+
+            _settings.GetHasPendingPairing = () => _pairingManager?.HasPendingPairing ?? false;
+            _settings.GetPendingPeerInfo = () =>
+            {
+                if (_pairingManager == null || !_pairingManager.HasPendingPairing)
+                    return null;
+                string addr = _pairingManager.PendingPeerAddress ?? "?";
+                string ver = _pairingManager.PendingPeerVersion;
+                if (!string.IsNullOrEmpty(ver))
+                    return $"{addr} (luducat v{ver})";
+                return addr;
+            };
+            _settings.SubmitPairingCode = (code) => _pairingManager?.SubmitPairingCode(code);
+            _settings.CancelPendingPairing = () => _pairingManager?.CancelPendingPairing();
+            _settings.OnPendingPairingChanged = () => { };
 
             _server = new BridgeServer(
                 _settings,

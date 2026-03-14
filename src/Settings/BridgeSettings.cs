@@ -38,6 +38,21 @@ namespace LuducatBridge
         [JsonIgnore]
         public System.Func<bool> GetIsPaired { get; set; }
 
+        [JsonIgnore]
+        public System.Action OnPendingPairingChanged { get; set; }
+
+        [JsonIgnore]
+        public System.Func<bool> GetHasPendingPairing { get; set; }
+
+        [JsonIgnore]
+        public System.Func<string> GetPendingPeerInfo { get; set; }
+
+        [JsonIgnore]
+        public System.Action<string> SubmitPairingCode { get; set; }
+
+        [JsonIgnore]
+        public System.Action CancelPendingPairing { get; set; }
+
         public BridgeSettings() { _plugin = null; }
 
         public BridgeSettings(Plugin plugin)

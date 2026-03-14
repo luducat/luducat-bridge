@@ -16,6 +16,8 @@ namespace LuducatBridge.Settings
     {
         private TextBlock _statusBullet;
         private TextBlock _statusText;
+        private TextBlock _pairingHint;
+        private Button _pairButton;
         private Button _unpairButton;
 
         public BridgeSettingsView()
@@ -52,25 +54,47 @@ namespace LuducatBridge.Settings
             _statusText = new TextBlock
             {
                 VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
             };
             statusRow.Children.Add(_statusText);
             connStack.Children.Add(statusRow);
 
-            // Unpair button row
-            var unpairRow = new StackPanel
+            // Pairing hint
+            _pairingHint = new TextBlock
+            {
+                Text = "To pair, start pairing from luducat, then click Pair here.",
+                FontSize = 11,
+                Foreground = Brushes.Gray,
+                FontStyle = FontStyles.Italic,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(120, 4, 0, 0),
+            };
+            connStack.Children.Add(_pairingHint);
+
+            // Button row (Pair + Unpair)
+            var btnRow = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Right,
                 Margin = new Thickness(0, 8, 0, 0),
             };
+            _pairButton = new Button
+            {
+                Content = "Pair",
+                Padding = new Thickness(16, 4, 16, 4),
+                Margin = new Thickness(0, 0, 8, 0),
+            };
+            _pairButton.Click += OnPairClicked;
+            btnRow.Children.Add(_pairButton);
+
             _unpairButton = new Button
             {
                 Content = "Unpair",
                 Padding = new Thickness(16, 4, 16, 4),
             };
             _unpairButton.Click += OnUnpairClicked;
-            unpairRow.Children.Add(_unpairButton);
-            connStack.Children.Add(unpairRow);
+            btnRow.Children.Add(_unpairButton);
+            connStack.Children.Add(btnRow);
 
             connGroup.Content = connStack;
             stack.Children.Add(connGroup);
@@ -177,23 +201,91 @@ namespace LuducatBridge.Settings
                 return;
 
             bool isPaired = settings.GetIsPaired?.Invoke() ?? false;
+            bool hasPending = settings.GetHasPendingPairing?.Invoke() ?? false;
             string statusText = settings.GetStatusText?.Invoke() ?? "Unknown";
 
-            _statusText.Text = statusText;
-            _unpairButton.IsEnabled = isPaired;
-
-            if (string.Equals(statusText, "Connected", System.StringComparison.Ordinal))
+            if (hasPending)
             {
-                _statusBullet.Foreground = Brushes.LimeGreen;
-            }
-            else if (isPaired)
-            {
-                _statusBullet.Foreground = Brushes.Orange;
+                string peerInfo = settings.GetPendingPeerInfo?.Invoke() ?? "unknown";
+                _statusText.Text = $"Pairing request from {peerInfo}";
+                _statusBullet.Foreground = Brushes.DodgerBlue;
+                _pairingHint.Text = "Click Pair and enter the 6-digit code shown in luducat.";
+                _pairingHint.Visibility = Visibility.Visible;
             }
             else
             {
-                _statusBullet.Foreground = Brushes.Gray;
+                _statusText.Text = statusText;
+                _pairingHint.Text = "To pair, start pairing from luducat, then click Pair here.";
+                _pairingHint.Visibility = isPaired
+                    ? Visibility.Collapsed : Visibility.Visible;
+
+                if (string.Equals(statusText, "Connected", System.StringComparison.Ordinal))
+                {
+                    _statusBullet.Foreground = Brushes.LimeGreen;
+                }
+                else if (isPaired)
+                {
+                    _statusBullet.Foreground = Brushes.Orange;
+                }
+                else
+                {
+                    _statusBullet.Foreground = Brushes.Gray;
+                }
             }
+
+            _pairButton.IsEnabled = !isPaired;
+            // Always enabled — lets user force-clear stale credentials
+            _unpairButton.IsEnabled = true;
+        }
+
+        private void OnPairClicked(object sender, RoutedEventArgs e)
+        {
+            var settings = DataContext as BridgeSettings;
+            if (settings == null)
+                return;
+
+            bool hasPending = settings.GetHasPendingPairing?.Invoke() ?? false;
+            if (!hasPending)
+            {
+                MessageBox.Show(
+                    "No pairing request pending.\n\nStart pairing from luducat first, " +
+                    "then click Pair here to enter the verification code.",
+                    "luducat Bridge",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            string peerInfo = settings.GetPendingPeerInfo?.Invoke() ?? "unknown";
+            var result = Playnite.SDK.API.Instance.Dialogs.SelectString(
+                $"Pairing request from {peerInfo}.\n\n" +
+                "Enter the 6-digit code displayed in luducat:",
+                "luducat Bridge \u2014 Enter Pairing Code",
+                "");
+
+            if (result != null && result.Result)
+            {
+                string code = result.SelectedString?.Replace(" ", "").Trim();
+                if (!string.IsNullOrEmpty(code))
+                {
+                    settings.SubmitPairingCode?.Invoke(code);
+                    // Give async handler a moment, then refresh
+                    var timer = new System.Windows.Threading.DispatcherTimer
+                    {
+                        Interval = System.TimeSpan.FromMilliseconds(500),
+                    };
+                    timer.Tick += (s2, e2) =>
+                    {
+                        timer.Stop();
+                        RefreshStatus();
+                    };
+                    timer.Start();
+                    return;
+                }
+            }
+
+            settings.CancelPendingPairing?.Invoke();
+            RefreshStatus();
         }
 
         private void OnUnpairClicked(object sender, RoutedEventArgs e)

@@ -9,6 +9,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -46,9 +47,30 @@ namespace LuducatBridge
         private const int MAX_VERIFY_ATTEMPTS = 3;
         private static readonly TimeSpan VERIFY_LOCKOUT_DURATION = TimeSpan.FromMinutes(5);
 
+        // Pending pairing state — waits for Playnite user to enter code
+        private TaskCompletionSource<string> _pendingCodeTcs;
+        private string _pendingPeerAddress;
+        private string _pendingPeerVersion;
+        private string _pendingDerivedCode;
+
         public bool IsPaired
         {
             get { return _peerPublicKey != null && _totpSecret != null; }
+        }
+
+        public bool HasPendingPairing
+        {
+            get { return _pendingCodeTcs != null; }
+        }
+
+        public string PendingPeerAddress
+        {
+            get { return _pendingPeerAddress; }
+        }
+
+        public string PendingPeerVersion
+        {
+            get { return _pendingPeerVersion; }
         }
 
         public List<string> GrantedPermissions
@@ -100,14 +122,17 @@ namespace LuducatBridge
 
         /// <summary>
         /// Handle pairing handshake over an already-established TLS stream.
-        /// Includes: pairing lock, rate limiting, ECDSA P-256 challenge,
-        /// and cert-bound verification codes.
         /// </summary>
-        public async Task HandlePairHello(Stream stream, JObject helloMsg, X509Certificate2 serverCert)
+        public async Task HandlePairHello(
+            Stream stream, JObject helloMsg, X509Certificate2 serverCert,
+            string remoteAddress)
         {
             string nonce = helloMsg["nonce"]?.ToString() ?? "";
             string peerPubKeyB64 = helloMsg["public_key"]?.ToString() ?? "";
             string peerVersion = helloMsg["version"]?.ToString() ?? "";
+            string peerMinVersion = helloMsg["min_version"]?.ToString() ?? "";
+            string clientVersion = helloMsg["client_version"]?.ToString() ?? "";
+            long peerTimestamp = helloMsg["timestamp"]?.ToObject<long>() ?? 0;
 
             _logger.Info("Pairing handshake started");
 
@@ -131,13 +156,38 @@ namespace LuducatBridge
                 return;
             }
 
-            // Version check
+            // Version check — peer version must be >= our min, our version must be >= peer min
             if (!peerVersion.StartsWith("1."))
             {
                 _logger.Warn($"Pairing rejected: incompatible version {peerVersion}");
                 await SendError(stream, "pair_hello_reply", nonce,
                     ErrorCodes.VERSION_MISMATCH,
                     $"Incompatible protocol version: {peerVersion}");
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(peerMinVersion) && !peerMinVersion.StartsWith("1."))
+            {
+                _logger.Warn($"Pairing rejected: peer requires min version {peerMinVersion}");
+                await SendError(stream, "pair_hello_reply", nonce,
+                    ErrorCodes.VERSION_MISMATCH,
+                    $"Cannot satisfy minimum protocol version: {peerMinVersion}");
+                return;
+            }
+
+            // Validate timestamp within ±1 window (5-minute windows)
+            long ourTsWindow = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 300;
+            long tsWindow = peerTimestamp;
+            if (tsWindow == 0)
+            {
+                tsWindow = ourTsWindow;
+            }
+            else if (Math.Abs(tsWindow - ourTsWindow) > 1)
+            {
+                _logger.Warn($"Pairing rejected: timestamp too far off (peer={tsWindow}, ours={ourTsWindow})");
+                await SendError(stream, "pair_hello_reply", nonce,
+                    ErrorCodes.PAIR_REJECTED,
+                    "Clock skew too large");
                 return;
             }
 
@@ -166,10 +216,10 @@ namespace LuducatBridge
             string verifyNonce = verifyMsg["nonce"]?.ToString() ?? "";
             string peerCode = verifyMsg["verification_code"]?.ToString() ?? "";
 
-            // Derive verification code with cert binding
+            // Derive verification code with cert and timestamp binding
             byte[] certDer = serverCert?.RawData;
             string ourCode = CryptoHelper.DeriveVerificationCode(
-                _ourPublicKey, _peerPublicKey, certDer);
+                _ourPublicKey, _peerPublicKey, certDer, tsWindow);
 
             if (!string.Equals(peerCode, ourCode, StringComparison.Ordinal))
             {
@@ -192,9 +242,36 @@ namespace LuducatBridge
                 return;
             }
 
-            // Reset rate limit on success
             _failedVerifyAttempts = 0;
-            _logger.Info("Verification codes match");
+            _logger.Info("Verification codes match programmatically");
+
+            // ── Wait for Playnite user to enter the code ──────────────
+            _pendingDerivedCode = ourCode;
+            string userCode = await WaitForUserCodeEntry(
+                remoteAddress, clientVersion, Protocol.PAIRING_TIMEOUT_SEC * 1000);
+
+            if (userCode == null)
+            {
+                _logger.Info("Pairing timed out or was cancelled by Playnite user");
+                await SendError(stream, "pair_verify_reply", verifyNonce,
+                    ErrorCodes.PAIR_REJECTED,
+                    "Playnite user did not confirm the pairing");
+                ClearKeyMaterial();
+                return;
+            }
+
+            userCode = userCode.Replace(" ", "").Trim();
+            if (!string.Equals(userCode, ourCode, StringComparison.Ordinal))
+            {
+                _logger.Warn("Playnite user entered wrong verification code");
+                await SendError(stream, "pair_verify_reply", verifyNonce,
+                    ErrorCodes.PAIR_REJECTED,
+                    "Verification code mismatch");
+                ClearKeyMaterial();
+                return;
+            }
+
+            _logger.Info("Playnite user entered correct verification code");
 
             // Send verify reply
             var verifyReply = new PairVerifyReply
@@ -303,6 +380,40 @@ namespace LuducatBridge
                 Nonce = completeNonce,
             };
             await SendJson(stream, completeReply);
+        }
+
+        public void SubmitPairingCode(string code)
+        {
+            _pendingCodeTcs?.TrySetResult(code);
+        }
+
+        public void CancelPendingPairing()
+        {
+            _pendingCodeTcs?.TrySetResult(null);
+        }
+
+        private async Task<string> WaitForUserCodeEntry(
+            string peerAddress, string peerVersion, int timeoutMs)
+        {
+            _pendingCodeTcs = new TaskCompletionSource<string>();
+            _pendingPeerAddress = peerAddress;
+            _pendingPeerVersion = peerVersion;
+            _settings.OnPendingPairingChanged?.Invoke();
+
+            string result;
+            using (var cts = new CancellationTokenSource(timeoutMs))
+            {
+                cts.Token.Register(() => _pendingCodeTcs.TrySetResult(null));
+                result = await _pendingCodeTcs.Task;
+            }
+
+            _pendingCodeTcs = null;
+            _pendingPeerAddress = null;
+            _pendingPeerVersion = null;
+            _pendingDerivedCode = null;
+            _settings.OnPendingPairingChanged?.Invoke();
+
+            return result;
         }
 
         public void Unpair()

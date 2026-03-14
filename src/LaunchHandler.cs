@@ -101,7 +101,7 @@ namespace LuducatBridge
 
         // ── Resolution ───────────────────────────────────────────────
 
-        private Game ResolveGame(string store, string storeId)
+        internal virtual Game ResolveGame(string store, string storeId)
         {
             string[] sourceNames;
             if (!StoreSourceMap.TryGetValue(store.ToLowerInvariant(), out sourceNames))

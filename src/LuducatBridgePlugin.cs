@@ -17,6 +17,7 @@ namespace LuducatBridge
     public class LuducatBridgePlugin : GenericPlugin
     {
         private static readonly ILogger _logger = LogManager.GetLogger();
+        internal static LuducatBridgePlugin Instance { get; private set; }
 
         private BridgeSettings _settings;
         private BridgeServer _server;
@@ -31,6 +32,7 @@ namespace LuducatBridge
 
         public LuducatBridgePlugin(IPlayniteAPI api) : base(api)
         {
+            Instance = this;
             _settings = new BridgeSettings(this);
         }
 
@@ -39,6 +41,17 @@ namespace LuducatBridge
             _launchHandler = new LaunchHandler(PlayniteApi, _settings, _logger);
             _pairingManager = new PairingManager(_settings, _logger);
             _sessionManager = new SessionManager(_pairingManager, _settings, _logger);
+
+            // Wire settings callbacks for the settings view
+            _settings.GetIsPaired = () => _pairingManager?.IsPaired ?? false;
+            _settings.GetStatusText = () =>
+            {
+                if (_pairingManager == null) return "Not initialized";
+                if (!_pairingManager.IsPaired) return "Not paired";
+                if (_server?.HasActiveSession == true) return "Connected";
+                return "Paired (not connected)";
+            };
+            _settings.OnUnpairRequested = () => { _pairingManager?.Unpair(); };
 
             _server = new BridgeServer(
                 _settings,

@@ -23,12 +23,20 @@ namespace LuducatBridge
         /// <summary>Enable verbose logging.</summary>
         public bool DebugLogging { get; set; } = false;
 
-        // Non-serialized runtime state
+        // Phase 2 data sync settings (persisted but not yet active)
+        public bool ShareFavorites { get; set; } = false;
+        public bool ShareTags { get; set; } = false;
+        public bool SharePlaytime { get; set; } = false;
+
+        // Runtime-only callbacks for settings view to access plugin state
         [JsonIgnore]
-        public bool IsPaired { get; set; } = false;
+        public System.Action OnUnpairRequested { get; set; }
 
         [JsonIgnore]
-        public string ConnectionStatus { get; set; } = "Not connected";
+        public System.Func<string> GetStatusText { get; set; }
+
+        [JsonIgnore]
+        public System.Func<bool> GetIsPaired { get; set; }
 
         public BridgeSettings() { _plugin = null; }
 
@@ -42,6 +50,9 @@ namespace LuducatBridge
                 Port = saved.Port;
                 AlwaysAllow = saved.AlwaysAllow;
                 DebugLogging = saved.DebugLogging;
+                ShareFavorites = saved.ShareFavorites;
+                ShareTags = saved.ShareTags;
+                SharePlaytime = saved.SharePlaytime;
             }
         }
 

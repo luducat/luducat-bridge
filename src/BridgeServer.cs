@@ -156,6 +156,14 @@ namespace LuducatBridge
                 client.Close();
                 return;
             }
+            catch (IOException)
+            {
+                // Expected: non-TLS probe (e.g. luducat Test button) or aborted connection
+                if (_settings.DebugLogging)
+                    _logger.Debug("Connection closed during TLS handshake (non-TLS probe?)");
+                client.Close();
+                return;
+            }
 
             _logger.Info($"TLS established: {sslStream.SslProtocol}, {sslStream.CipherAlgorithm}");
 

@@ -33,6 +33,7 @@ namespace LuducatBridge
         public LuducatBridgePlugin(IPlayniteAPI api) : base(api)
         {
             Instance = this;
+            Properties = new GenericPluginProperties { HasSettings = true };
             _settings = new BridgeSettings(this);
         }
 

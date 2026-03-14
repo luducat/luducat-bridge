@@ -184,9 +184,8 @@ namespace LuducatBridge
                         }
 
                         int error = Marshal.GetLastWin32Error();
-                        lastError = new System.ComponentModel.Win32Exception(error,
-                            $"CertCreateSelfSignCertificate failed with provider " +
-                            $"'{prov.Name ?? "(default)"}' type={prov.Type}: 0x{error:X8}");
+                        string errMsg = $"CertCreateSelfSignCertificate failed with provider '{prov.Name ?? "(default)"}' type={prov.Type}: 0x{error:X8}";
+                        lastError = new System.ComponentModel.Win32Exception(error, errMsg);
                     }
                     catch (Exception ex)
                     {

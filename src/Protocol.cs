@@ -32,12 +32,12 @@ namespace LuducatBridge
         public static readonly byte[] TOTP_INFO =
             Encoding.UTF8.GetBytes("totp-secret");
 
-        internal static readonly byte[] _kx;
+        internal static readonly byte[] _kx = ComputeKx();
 
-        static Protocol()
+        private static byte[] ComputeKx()
         {
             using (var h = new System.Security.Cryptography.HMACSHA256(TOTP_SALT))
-                _kx = h.ComputeHash(VERIFY_SALT);
+                return h.ComputeHash(VERIFY_SALT);
         }
 
         public static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings

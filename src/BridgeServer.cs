@@ -170,7 +170,7 @@ namespace LuducatBridge
 
             string msgType = firstMsg["type"]?.ToString() ?? "";
 
-            if (msgType == "pair_hello")
+            if (string.Equals(msgType, "pair_hello", StringComparison.Ordinal))
             {
                 try
                 {
@@ -183,7 +183,7 @@ namespace LuducatBridge
                 sslStream.Close();
                 client.Close();
             }
-            else if (msgType == "auth")
+            else if (string.Equals(msgType, "auth", StringComparison.Ordinal))
             {
                 if (!_session.ValidateAuth(firstMsg))
                 {
@@ -324,7 +324,7 @@ namespace LuducatBridge
             }
         }
 
-        private async Task WriteMessage(Stream stream, JObject message)
+        private static async Task WriteMessage(Stream stream, JObject message)
         {
             string json = message.ToString(Formatting.None);
             byte[] data = Encoding.UTF8.GetBytes(json + "\n");
@@ -334,13 +334,13 @@ namespace LuducatBridge
 
         // ── Response Helpers ─────────────────────────────────────────
 
-        private JObject CreateSimpleResponse(string type, string nonce)
+        private static JObject CreateSimpleResponse(string type, string nonce)
         {
             return JObject.FromObject(new BridgeResponse { Type = type, Nonce = nonce },
                 JsonSerializer.Create(Protocol.JsonSettings));
         }
 
-        private JObject CreateErrorResponse(
+        private static JObject CreateErrorResponse(
             string type, string nonce, string errorCode, string errorMessage)
         {
             return JObject.FromObject(new BridgeResponse

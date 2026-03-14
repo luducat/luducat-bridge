@@ -38,8 +38,8 @@ namespace LuducatBridge
         {
             int hashLen = 32; // SHA-256
             int n = (int)Math.Ceiling((double)length / hashLen);
-            byte[] okm = new byte[0];
-            byte[] t = new byte[0];
+            byte[] okm = Array.Empty<byte>();
+            byte[] t = Array.Empty<byte>();
 
             for (int i = 1; i <= n; i++)
             {
@@ -166,46 +166,60 @@ namespace LuducatBridge
         {
             for (int window = -TOTP_WINDOW; window <= TOTP_WINDOW; window++)
             {
-                if (ComputeTotp(secret, window) == totpValue)
+                if (string.Equals(ComputeTotp(secret, window), totpValue, StringComparison.Ordinal))
                     return true;
             }
             return false;
         }
 
-        // ── Key Generation (ECDSA P-256) ─────────────────────────────
+        // ── Key Generation (ECDSA P-256 via CNG) ─────────────────────
+
+        // CNG blob layout for ECDSA P-256:
+        //   EccPublicBlob:  Magic(4) + KeyLen(4) + X(32) + Y(32) = 72 bytes
+        //   EccPrivateBlob: Magic(4) + KeyLen(4) + X(32) + Y(32) + D(32) = 104 bytes
+        // Magic: public = 0x31534345 ("ECS1"), private = 0x32534345 ("ECS2")
+        private const int CNG_HEADER_SIZE = 8;
+        private const int P256_KEY_SIZE = 32;
 
         /// <summary>
         /// Generate an ECDSA P-256 key pair for signing challenges.
         /// Public key exported as uncompressed point (65 bytes: 0x04 || X || Y).
+        /// CNG private blob stored for later signing.
         /// </summary>
         public static KeyPair GenerateKeyPair()
         {
-            using (var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256))
+            using (var key = CngKey.Create(CngAlgorithm.ECDsaP256))
+            using (var ecdsa = new ECDsaCng(key))
             {
-                var parameters = ecdsa.ExportParameters(true);
-                // Uncompressed point: 0x04 || X(32) || Y(32) = 65 bytes
+                byte[] privateBlob = key.Export(CngKeyBlobFormat.EccPrivateBlob);
+
+                // Extract X, Y from CNG blob (skip 8-byte header)
                 byte[] publicKey = new byte[65];
                 publicKey[0] = 0x04;
-                Array.Copy(parameters.Q.X, 0, publicKey, 1, 32);
-                Array.Copy(parameters.Q.Y, 0, publicKey, 33, 32);
-                // Private key: D parameter (32 bytes)
-                byte[] privateKey = (byte[])parameters.D.Clone();
+                Array.Copy(privateBlob, CNG_HEADER_SIZE, publicKey, 1, P256_KEY_SIZE);
+                Array.Copy(privateBlob, CNG_HEADER_SIZE + P256_KEY_SIZE, publicKey, 33, P256_KEY_SIZE);
 
-                return new KeyPair(publicKey, privateKey, parameters);
+                // D parameter (32 bytes after X and Y)
+                byte[] privateKey = new byte[P256_KEY_SIZE];
+                Array.Copy(privateBlob, CNG_HEADER_SIZE + P256_KEY_SIZE * 2, privateKey, 0, P256_KEY_SIZE);
+
+                return new KeyPair(publicKey, privateKey, privateBlob);
             }
         }
 
         // ── Signing / Verification ────────────────────────────────────
 
         /// <summary>
-        /// Sign data with our ECDSA P-256 private key.
+        /// Sign data with our ECDSA P-256 private key (CNG private blob).
         /// Returns the DER-encoded signature.
         /// </summary>
-        public static byte[] Sign(ECParameters privateParams, byte[] data)
+        public static byte[] Sign(byte[] cngPrivateBlob, byte[] data)
         {
-            using (var ecdsa = ECDsa.Create(privateParams))
+            using (var key = CngKey.Import(cngPrivateBlob, CngKeyBlobFormat.EccPrivateBlob))
+            using (var ecdsa = new ECDsaCng(key))
             {
-                return ecdsa.SignData(data, HashAlgorithmName.SHA256);
+                ecdsa.HashAlgorithm = CngAlgorithm.Sha256;
+                return ecdsa.SignData(data);
             }
         }
 
@@ -218,21 +232,20 @@ namespace LuducatBridge
             if (publicKeyBytes == null || publicKeyBytes.Length != 65 || publicKeyBytes[0] != 0x04)
                 return false;
 
-            var parameters = new ECParameters
-            {
-                Curve = ECCurve.NamedCurves.nistP256,
-                Q = new ECPoint
-                {
-                    X = new byte[32],
-                    Y = new byte[32],
-                },
-            };
-            Array.Copy(publicKeyBytes, 1, parameters.Q.X, 0, 32);
-            Array.Copy(publicKeyBytes, 33, parameters.Q.Y, 0, 32);
+            // Build CNG EccPublicBlob: header + X + Y
+            byte[] publicBlob = new byte[CNG_HEADER_SIZE + P256_KEY_SIZE * 2];
+            // Magic: ECS1 = 0x31534345
+            publicBlob[0] = 0x45; publicBlob[1] = 0x43; publicBlob[2] = 0x53; publicBlob[3] = 0x31;
+            // Key length: 32
+            publicBlob[4] = 0x20; publicBlob[5] = 0x00; publicBlob[6] = 0x00; publicBlob[7] = 0x00;
+            Array.Copy(publicKeyBytes, 1, publicBlob, CNG_HEADER_SIZE, P256_KEY_SIZE);
+            Array.Copy(publicKeyBytes, 33, publicBlob, CNG_HEADER_SIZE + P256_KEY_SIZE, P256_KEY_SIZE);
 
-            using (var ecdsa = ECDsa.Create(parameters))
+            using (var key = CngKey.Import(publicBlob, CngKeyBlobFormat.EccPublicBlob))
+            using (var ecdsa = new ECDsaCng(key))
             {
-                return ecdsa.VerifyData(data, signature, HashAlgorithmName.SHA256);
+                ecdsa.HashAlgorithm = CngAlgorithm.Sha256;
+                return ecdsa.VerifyData(data, signature);
             }
         }
 
@@ -272,17 +285,20 @@ namespace LuducatBridge
         }
     }
 
+    /// <summary>
+    /// ECDSA P-256 key pair. Stores uncompressed public point and CNG private blob.
+    /// </summary>
     public class KeyPair
     {
         public byte[] PublicKey { get; }
         public byte[] PrivateKey { get; }
-        public ECParameters ECParameters { get; }
+        public byte[] CngPrivateBlob { get; }
 
-        public KeyPair(byte[] publicKey, byte[] privateKey, ECParameters ecParams)
+        public KeyPair(byte[] publicKey, byte[] privateKey, byte[] cngPrivateBlob)
         {
             PublicKey = publicKey;
             PrivateKey = privateKey;
-            ECParameters = ecParams;
+            CngPrivateBlob = cngPrivateBlob;
         }
     }
 

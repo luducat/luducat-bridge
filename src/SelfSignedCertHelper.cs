@@ -28,7 +28,7 @@ namespace LuducatBridge
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CertFreeCertificateContext(IntPtr pCertContext);
 
-        [DllImport("crypt32.dll", SetLastError = true)]
+        [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CertStrToNameW(
             uint dwCertEncodingType,

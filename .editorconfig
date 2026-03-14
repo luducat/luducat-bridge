@@ -51,8 +51,20 @@ dotnet_diagnostic.CA1815.severity = warning
 # CA1838: StringBuilder in P/Invoke
 dotnet_diagnostic.CA1838.severity = none
 
-# CA1852: Seal internal types
-dotnet_diagnostic.CA1852.severity = warning
+# CA1805: Explicit default initialization — intentional for readability
+dotnet_diagnostic.CA1805.severity = none
+
+# CA1816: GC.SuppressFinalize — no finalizer, not needed
+dotnet_diagnostic.CA1816.severity = none
+
+# CA1852: Seal internal types — Playnite may need unsealed for proxy/extension
+dotnet_diagnostic.CA1852.severity = none
+
+# CA1861: Prefer static readonly over constant arrays — not available on .NET 4.6.2 patterns
+dotnet_diagnostic.CA1861.severity = none
+
+# CA5350: HMACSHA1 — TOTP RFC 6238 mandates SHA-1, not a choice
+dotnet_diagnostic.CA5350.severity = none
 
 # CA1863: CompositeFormat — not available on .NET Framework 4.6.2
 dotnet_diagnostic.CA1863.severity = none
@@ -76,17 +88,21 @@ dotnet_diagnostic.SA1005.severity = none
 dotnet_diagnostic.SA1009.severity = none
 dotnet_diagnostic.SA1011.severity = none
 dotnet_diagnostic.SA1101.severity = none
+dotnet_diagnostic.SA1107.severity = none
 dotnet_diagnostic.SA1111.severity = none
 dotnet_diagnostic.SA1116.severity = none
 dotnet_diagnostic.SA1117.severity = none
 dotnet_diagnostic.SA1119.severity = none
 dotnet_diagnostic.SA1122.severity = none
 dotnet_diagnostic.SA1128.severity = none
+dotnet_diagnostic.SA1129.severity = none
 dotnet_diagnostic.SA1131.severity = none
 dotnet_diagnostic.SA1133.severity = none
 dotnet_diagnostic.SA1200.severity = none
+dotnet_diagnostic.SA1407.severity = none
 dotnet_diagnostic.SA1413.severity = none
 dotnet_diagnostic.SA1501.severity = none
+dotnet_diagnostic.SA1502.severity = none
 dotnet_diagnostic.SA1503.severity = none
 
 # --- Blank line rules (cosmetic) ---
@@ -100,10 +116,15 @@ dotnet_diagnostic.SA1516.severity = none
 # --- Element ordering (cosmetic) ---
 dotnet_diagnostic.SA1201.severity = none
 dotnet_diagnostic.SA1202.severity = none
+dotnet_diagnostic.SA1203.severity = none
 dotnet_diagnostic.SA1204.severity = none
 dotnet_diagnostic.SA1206.severity = none
 dotnet_diagnostic.SA1208.severity = none
 dotnet_diagnostic.SA1210.severity = none
+dotnet_diagnostic.SA1214.severity = none
+
+# SA1402: File may only contain single type — Protocol.cs groups related wire types
+dotnet_diagnostic.SA1402.severity = none
 
 # --- Naming: protocol constants, async methods ---
 dotnet_diagnostic.SA1121.severity = none
@@ -146,8 +167,39 @@ dotnet_diagnostic.S101.severity = none
 # S2344: Enum suffix 'Flags'
 dotnet_diagnostic.S2344.severity = none
 
+# S108: Empty catch blocks — intentional fire-and-forget cleanup
+dotnet_diagnostic.S108.severity = none
+
+# S1450: Field could be local — class state fields used across methods/sessions
+dotnet_diagnostic.S1450.severity = none
+
+# S2386/S3887: Mutable public static readonly arrays — protocol constants, internal use
+dotnet_diagnostic.S2386.severity = none
+dotnet_diagnostic.S3887.severity = none
+
+# S2486: Handle exception in catch — intentional catch-and-swallow in cleanup
+dotnet_diagnostic.S2486.severity = none
+
+# S2933: Make field readonly — fields may change across sessions
+dotnet_diagnostic.S2933.severity = none
+
 # S3267: Simplify loop to LINQ
 dotnet_diagnostic.S3267.severity = none
+
+# S3358: Nested ternary — readable in context
+dotnet_diagnostic.S3358.severity = none
+
+# S3881: IDisposable pattern — simplified pattern sufficient for plugin lifecycle
+dotnet_diagnostic.S3881.severity = none
+
+# S4487: Unread private field — reserved for future use
+dotnet_diagnostic.S4487.severity = none
+
+# S6966: Use async overloads — not available on .NET Framework 4.6.2
+dotnet_diagnostic.S6966.severity = none
+
+# S927: Parameter name mismatch — Playnite SDK inconsistency (firstRunSettings vs firstRunView)
+dotnet_diagnostic.S927.severity = none
 
 # ============================================================
 # Meziantou (MA rules)
@@ -162,11 +214,24 @@ dotnet_diagnostic.MA0016.severity = none
 # MA0048: File name must match type name — Protocol.cs groups related types
 dotnet_diagnostic.MA0048.severity = none
 
+# MA0004: ConfigureAwait — plugin runs in Playnite process, not a reusable library
+dotnet_diagnostic.MA0004.severity = none
+
 # MA0049: Type name should not match namespace
 dotnet_diagnostic.MA0049.severity = none
 
 # MA0051: Method too long — HandlePairHello is complex but cohesive (protocol state machine)
 dotnet_diagnostic.MA0051.severity = none
+
+# MA0074: Avoid implicit culture-sensitive — IPC protocol uses fixed encoding
+dotnet_diagnostic.MA0074.severity = none
+
+# ============================================================
+# Roslynator (RCS rules)
+# ============================================================
+
+# RCS1075: Avoid empty catch — intentional cleanup catch-and-swallow
+dotnet_diagnostic.RCS1075.severity = none
 
 [*.sln]
 indent_style = tab

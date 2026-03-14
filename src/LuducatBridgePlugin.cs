@@ -73,7 +73,7 @@ namespace LuducatBridge
             return _settings;
         }
 
-        public override UserControl GetSettingsView(bool firstRunSettings)
+        public override UserControl GetSettingsView(bool firstRunView)
         {
             return new Settings.BridgeSettingsView();
         }

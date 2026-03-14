@@ -32,7 +32,7 @@ namespace LuducatBridge
         private byte[] _ourPublicKey;
         private byte[] _peerPublicKey;
         private byte[] _totpSecret;
-        private ECParameters? _ourECParams;
+        private byte[] _ourCngPrivateBlob;
         private List<string> _grantedPermissions = new List<string>();
 
         // TLS certificate (self-signed, persisted)
@@ -130,7 +130,7 @@ namespace LuducatBridge
             var keyPair = CryptoHelper.GenerateKeyPair();
             _ourPrivateKey = keyPair.PrivateKey;
             _ourPublicKey = keyPair.PublicKey;
-            _ourECParams = keyPair.ECParameters;
+            _ourCngPrivateBlob = keyPair.CngPrivateBlob;
             _peerPublicKey = Convert.FromBase64String(peerPubKeyB64);
 
             // Send our public key
@@ -154,7 +154,7 @@ namespace LuducatBridge
             string ourCode = CryptoHelper.DeriveVerificationCode(
                 _ourPublicKey, _peerPublicKey, certDer);
 
-            if (peerCode != ourCode)
+            if (!string.Equals(peerCode, ourCode, StringComparison.Ordinal))
             {
                 _failedVerifyAttempts++;
                 if (_failedVerifyAttempts >= MAX_VERIFY_ATTEMPTS)
@@ -196,7 +196,7 @@ namespace LuducatBridge
 
             // Sign: challenge || peer_public_key
             byte[] signPayload = CryptoHelper.Concat(clientChallenge, _peerPublicKey);
-            byte[] bridgeSig = CryptoHelper.Sign(_ourECParams.Value, signPayload);
+            byte[] bridgeSig = CryptoHelper.Sign(_ourCngPrivateBlob, signPayload);
 
             // Generate our challenge for the client
             byte[] bridgeChallenge = CryptoHelper.GenerateChallenge();
@@ -248,7 +248,7 @@ namespace LuducatBridge
                 .ToList() ?? new List<string>();
 
             // Only "launch" is currently supported
-            _grantedPermissions = permissions.Where(p => p == "launch").ToList();
+            _grantedPermissions = permissions.Where(p => string.Equals(p, "launch", StringComparison.Ordinal)).ToList();
 
             var permReply = new PairPermissionsReply
             {
@@ -286,7 +286,7 @@ namespace LuducatBridge
 
         // ── Certificate Storage ──────────────────────────────────────
 
-        private void SaveCertificate(X509Certificate2 cert)
+        private static void SaveCertificate(X509Certificate2 cert)
         {
             try
             {
@@ -299,7 +299,7 @@ namespace LuducatBridge
             catch (Exception) { }
         }
 
-        private X509Certificate2 LoadCertificate()
+        private static X509Certificate2 LoadCertificate()
         {
             try
             {
@@ -320,7 +320,7 @@ namespace LuducatBridge
 
         private void SaveCredentials()
         {
-            var data = new Dictionary<string, string>
+            var data = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["peer_public_key"] = _peerPublicKey != null
                     ? Convert.ToBase64String(_peerPublicKey) : null,
@@ -367,23 +367,22 @@ namespace LuducatBridge
                 if (data.TryGetValue("our_private_key", out val) && val != null)
                 {
                     _ourPrivateKey = Convert.FromBase64String(val);
-                    // Reconstruct ECParameters from stored key material
+                    // Reconstruct CNG private blob from stored key material
                     if (_ourPublicKey != null && _ourPublicKey.Length == 65
                         && _ourPrivateKey != null && _ourPrivateKey.Length == 32)
                     {
-                        var ecParams = new ECParameters
-                        {
-                            Curve = ECCurve.NamedCurves.nistP256,
-                            Q = new ECPoint
-                            {
-                                X = new byte[32],
-                                Y = new byte[32],
-                            },
-                            D = (byte[])_ourPrivateKey.Clone(),
-                        };
-                        Array.Copy(_ourPublicKey, 1, ecParams.Q.X, 0, 32);
-                        Array.Copy(_ourPublicKey, 33, ecParams.Q.Y, 0, 32);
-                        _ourECParams = ecParams;
+                        // CNG EccPrivateBlob: Magic(4) + KeyLen(4) + X(32) + Y(32) + D(32)
+                        _ourCngPrivateBlob = new byte[104];
+                        // Magic: ECS2 = 0x32534345
+                        _ourCngPrivateBlob[0] = 0x45; _ourCngPrivateBlob[1] = 0x43;
+                        _ourCngPrivateBlob[2] = 0x53; _ourCngPrivateBlob[3] = 0x32;
+                        // Key length: 32
+                        _ourCngPrivateBlob[4] = 0x20;
+                        // X, Y from public key (skip 0x04 prefix)
+                        Array.Copy(_ourPublicKey, 1, _ourCngPrivateBlob, 8, 32);
+                        Array.Copy(_ourPublicKey, 33, _ourCngPrivateBlob, 40, 32);
+                        // D (private key)
+                        Array.Copy(_ourPrivateKey, 0, _ourCngPrivateBlob, 72, 32);
                     }
                 }
 
@@ -393,7 +392,7 @@ namespace LuducatBridge
             catch (Exception) { }
         }
 
-        private void DeleteCredentials()
+        private static void DeleteCredentials()
         {
             try { CredentialManager.RemoveCredentials(CREDENTIAL_TARGET); } catch { }
             try { CredentialManager.RemoveCredentials(CERT_CREDENTIAL_TARGET); } catch { }
@@ -405,13 +404,13 @@ namespace LuducatBridge
             _ourPublicKey = null;
             _peerPublicKey = null;
             _totpSecret = null;
-            _ourECParams = null;
+            _ourCngPrivateBlob = null;
             _grantedPermissions.Clear();
         }
 
         private static byte[] HexToBytes(string hex)
         {
-            if (string.IsNullOrEmpty(hex)) return new byte[0];
+            if (string.IsNullOrEmpty(hex)) return Array.Empty<byte>();
             byte[] bytes = new byte[hex.Length / 2];
             for (int i = 0; i < bytes.Length; i++)
                 bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
@@ -420,7 +419,7 @@ namespace LuducatBridge
 
         // ── Stream I/O Helpers ───────────────────────────────────────
 
-        private async Task SendJson<T>(Stream stream, T obj)
+        private static async Task SendJson<T>(Stream stream, T obj)
         {
             string json = JsonConvert.SerializeObject(obj, Protocol.JsonSettings);
             byte[] data = Encoding.UTF8.GetBytes(json + "\n");
@@ -428,7 +427,7 @@ namespace LuducatBridge
             await stream.FlushAsync();
         }
 
-        private async Task<JObject> ReadJson(Stream stream)
+        private static async Task<JObject> ReadJson(Stream stream)
         {
             var buffer = new byte[Protocol.MAX_MESSAGE_SIZE];
             int offset = 0;
@@ -455,7 +454,7 @@ namespace LuducatBridge
             }
         }
 
-        private async Task SendError(
+        private static async Task SendError(
             Stream stream, string type, string nonce,
             string errorCode, string errorMessage)
         {

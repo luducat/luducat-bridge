@@ -19,7 +19,7 @@ namespace LuducatBridge
 
         // Store name → Playnite library plugin source name mapping
         private static readonly Dictionary<string, string[]> StoreSourceMap =
-            new Dictionary<string, string[]>
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
             { "steam", new[] { "Steam", "steam" } },
             { "gog", new[] { "GOG", "gog" } },
@@ -118,7 +118,7 @@ namespace LuducatBridge
 
         // ── Response Construction ────────────────────────────────────
 
-        private JObject CreateLaunchResult(
+        private static JObject CreateLaunchResult(
             string nonce,
             string launchStatus,
             string playniteId = null,

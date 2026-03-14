@@ -174,7 +174,7 @@ namespace LuducatBridge
             {
                 try
                 {
-                    await _pairing.HandlePairHello(sslStream, firstMsg);
+                    await _pairing.HandlePairHello(sslStream, firstMsg, cert);
                 }
                 catch (Exception ex)
                 {

@@ -32,10 +32,17 @@ namespace LuducatBridge
         private byte[] _ourPublicKey;
         private byte[] _peerPublicKey;
         private byte[] _totpSecret;
+        private ECParameters? _ourECParams;
         private List<string> _grantedPermissions = new List<string>();
 
         // TLS certificate (self-signed, persisted)
         private X509Certificate2 _serverCert;
+
+        // Rate limiting for verification attempts
+        private int _failedVerifyAttempts;
+        private DateTime _verifyLockoutUntil = DateTime.MinValue;
+        private const int MAX_VERIFY_ATTEMPTS = 3;
+        private static readonly TimeSpan VERIFY_LOCKOUT_DURATION = TimeSpan.FromMinutes(5);
 
         public bool IsPaired
         {
@@ -83,12 +90,32 @@ namespace LuducatBridge
 
         /// <summary>
         /// Handle pairing handshake over an already-established TLS stream.
+        /// Includes: pairing lock, rate limiting, ECDSA P-256 challenge,
+        /// and cert-bound verification codes.
         /// </summary>
-        public async Task HandlePairHello(Stream stream, JObject helloMsg)
+        public async Task HandlePairHello(Stream stream, JObject helloMsg, X509Certificate2 serverCert)
         {
             string nonce = helloMsg["nonce"]?.ToString() ?? "";
             string peerPubKeyB64 = helloMsg["public_key"]?.ToString() ?? "";
             string peerVersion = helloMsg["version"]?.ToString() ?? "";
+
+            // ── Pairing lock: reject if already paired ────────────────
+            if (IsPaired)
+            {
+                await SendError(stream, "pair_hello_reply", nonce,
+                    ErrorCodes.PAIR_REJECTED,
+                    "Already paired. Unpair first.");
+                return;
+            }
+
+            // ── Rate limiting: check lockout ──────────────────────────
+            if (DateTime.UtcNow < _verifyLockoutUntil)
+            {
+                await SendError(stream, "pair_hello_reply", nonce,
+                    ErrorCodes.RATE_LIMITED,
+                    "Too many failed attempts. Try again later.");
+                return;
+            }
 
             // Version check
             if (!peerVersion.StartsWith("1."))
@@ -99,10 +126,11 @@ namespace LuducatBridge
                 return;
             }
 
-            // Generate our keypair
+            // Generate our ECDSA P-256 keypair
             var keyPair = CryptoHelper.GenerateKeyPair();
             _ourPrivateKey = keyPair.PrivateKey;
             _ourPublicKey = keyPair.PublicKey;
+            _ourECParams = keyPair.ECParameters;
             _peerPublicKey = Convert.FromBase64String(peerPubKeyB64);
 
             // Send our public key
@@ -114,23 +142,39 @@ namespace LuducatBridge
             };
             await SendJson(stream, reply);
 
-            // Wait for pair_verify
+            // ── Wait for pair_verify ──────────────────────────────────
             var verifyMsg = await ReadJson(stream);
             if (verifyMsg == null) return;
 
             string verifyNonce = verifyMsg["nonce"]?.ToString() ?? "";
             string peerCode = verifyMsg["verification_code"]?.ToString() ?? "";
 
-            // Derive our verification code
-            string ourCode = CryptoHelper.DeriveVerificationCode(_ourPublicKey, _peerPublicKey);
+            // Derive verification code with cert binding
+            byte[] certDer = serverCert?.RawData;
+            string ourCode = CryptoHelper.DeriveVerificationCode(
+                _ourPublicKey, _peerPublicKey, certDer);
 
             if (peerCode != ourCode)
             {
-                await SendError(stream, "pair_verify_reply", verifyNonce,
-                    ErrorCodes.PAIR_REJECTED, "Verification code mismatch");
+                _failedVerifyAttempts++;
+                if (_failedVerifyAttempts >= MAX_VERIFY_ATTEMPTS)
+                {
+                    _verifyLockoutUntil = DateTime.UtcNow + VERIFY_LOCKOUT_DURATION;
+                    await SendError(stream, "pair_verify_reply", verifyNonce,
+                        ErrorCodes.RATE_LIMITED,
+                        $"Too many failed attempts. Locked out for {VERIFY_LOCKOUT_DURATION.TotalMinutes} minutes.");
+                }
+                else
+                {
+                    await SendError(stream, "pair_verify_reply", verifyNonce,
+                        ErrorCodes.PAIR_REJECTED, "Verification code mismatch");
+                }
                 ClearKeyMaterial();
                 return;
             }
+
+            // Reset rate limit on success
+            _failedVerifyAttempts = 0;
 
             // Send verify reply
             var verifyReply = new PairVerifyReply
@@ -141,7 +185,59 @@ namespace LuducatBridge
             };
             await SendJson(stream, verifyReply);
 
-            // Wait for permissions
+            // ── Signature challenge (MITM prevention) ─────────────────
+            // Wait for pair_challenge from client
+            var challengeMsg = await ReadJson(stream);
+            if (challengeMsg == null) return;
+
+            string challengeNonce = challengeMsg["nonce"]?.ToString() ?? "";
+            string clientChallengeHex = challengeMsg["challenge"]?.ToString() ?? "";
+            byte[] clientChallenge = HexToBytes(clientChallengeHex);
+
+            // Sign: challenge || peer_public_key
+            byte[] signPayload = CryptoHelper.Concat(clientChallenge, _peerPublicKey);
+            byte[] bridgeSig = CryptoHelper.Sign(_ourECParams.Value, signPayload);
+
+            // Generate our challenge for the client
+            byte[] bridgeChallenge = CryptoHelper.GenerateChallenge();
+
+            var challengeReply = new PairChallengeReply
+            {
+                Type = "pair_challenge_reply",
+                Nonce = challengeNonce,
+                BridgeSignature = Convert.ToBase64String(bridgeSig),
+                BridgeChallenge = BitConverter.ToString(bridgeChallenge).Replace("-", "").ToLowerInvariant(),
+            };
+            await SendJson(stream, challengeReply);
+
+            // Wait for pair_challenge_response with client's signature
+            var challengeRespMsg = await ReadJson(stream);
+            if (challengeRespMsg == null) return;
+
+            string respNonce = challengeRespMsg["nonce"]?.ToString() ?? "";
+            string clientSigB64 = challengeRespMsg["client_signature"]?.ToString() ?? "";
+            byte[] clientSig = Convert.FromBase64String(clientSigB64);
+
+            // Verify: client signed (bridge_challenge || bridge_public_key)
+            byte[] verifyPayload = CryptoHelper.Concat(bridgeChallenge, _ourPublicKey);
+            if (!CryptoHelper.Verify(_peerPublicKey, verifyPayload, clientSig))
+            {
+                await SendError(stream, "pair_challenge_verify", respNonce,
+                    ErrorCodes.CHALLENGE_FAILED,
+                    "Client signature verification failed — possible MITM");
+                ClearKeyMaterial();
+                return;
+            }
+
+            // Send challenge verified confirmation
+            var challengeOk = new BridgeResponse
+            {
+                Type = "pair_challenge_verify",
+                Nonce = respNonce,
+            };
+            await SendJson(stream, challengeOk);
+
+            // ── Wait for permissions ──────────────────────────────────
             var permMsg = await ReadJson(stream);
             if (permMsg == null) return;
 
@@ -162,7 +258,7 @@ namespace LuducatBridge
             };
             await SendJson(stream, permReply);
 
-            // Wait for pair_complete
+            // ── Wait for pair_complete ─────────────────────────────────
             var completeMsg = await ReadJson(stream);
             if (completeMsg == null) return;
 
@@ -269,7 +365,27 @@ namespace LuducatBridge
                     _ourPublicKey = Convert.FromBase64String(val);
 
                 if (data.TryGetValue("our_private_key", out val) && val != null)
+                {
                     _ourPrivateKey = Convert.FromBase64String(val);
+                    // Reconstruct ECParameters from stored key material
+                    if (_ourPublicKey != null && _ourPublicKey.Length == 65
+                        && _ourPrivateKey != null && _ourPrivateKey.Length == 32)
+                    {
+                        var ecParams = new ECParameters
+                        {
+                            Curve = ECCurve.NamedCurves.nistP256,
+                            Q = new ECPoint
+                            {
+                                X = new byte[32],
+                                Y = new byte[32],
+                            },
+                            D = (byte[])_ourPrivateKey.Clone(),
+                        };
+                        Array.Copy(_ourPublicKey, 1, ecParams.Q.X, 0, 32);
+                        Array.Copy(_ourPublicKey, 33, ecParams.Q.Y, 0, 32);
+                        _ourECParams = ecParams;
+                    }
+                }
 
                 if (data.TryGetValue("permissions", out val) && val != null)
                     _grantedPermissions = val.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).ToList();
@@ -289,7 +405,17 @@ namespace LuducatBridge
             _ourPublicKey = null;
             _peerPublicKey = null;
             _totpSecret = null;
+            _ourECParams = null;
             _grantedPermissions.Clear();
+        }
+
+        private static byte[] HexToBytes(string hex)
+        {
+            if (string.IsNullOrEmpty(hex)) return new byte[0];
+            byte[] bytes = new byte[hex.Length / 2];
+            for (int i = 0; i < bytes.Length; i++)
+                bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            return bytes;
         }
 
         // ── Stream I/O Helpers ───────────────────────────────────────

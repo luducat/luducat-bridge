@@ -70,6 +70,31 @@ namespace LuducatBridge
         public List<string> Permissions { get; set; } = new List<string>();
     }
 
+    // ── Challenge Message Types (MITM prevention) ───────────────────
+
+    public class PairChallengeMessage : BridgeMessage
+    {
+        [JsonProperty("challenge")]
+        public string Challenge { get; set; } = "";
+    }
+
+    public class PairChallengeReply : BridgeResponse
+    {
+        [JsonProperty("bridge_signature")]
+        public string BridgeSignature { get; set; } = "";
+
+        [JsonProperty("bridge_challenge")]
+        public string BridgeChallenge { get; set; } = "";
+    }
+
+    public class PairChallengeResponse : BridgeMessage
+    {
+        [JsonProperty("client_signature")]
+        public string ClientSignature { get; set; } = "";
+    }
+
+    // ── Session Message Types ─────────────────────────────────────
+
     public class AuthMessage : BridgeMessage
     {
         [JsonProperty("totp")]
@@ -184,6 +209,8 @@ namespace LuducatBridge
         public const string LAUNCH_FAILED = "LAUNCH_FAILED";
         public const string PROTOCOL_ERROR = "PROTOCOL_ERROR";
         public const string VERSION_MISMATCH = "VERSION_MISMATCH";
+        public const string CHALLENGE_FAILED = "CHALLENGE_FAILED";
+        public const string RATE_LIMITED = "RATE_LIMITED";
         public const string INTERNAL_ERROR = "INTERNAL_ERROR";
     }
 }

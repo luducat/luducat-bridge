@@ -81,11 +81,32 @@ namespace LuducatBridge
         /// </summary>
         public static string DeriveVerificationCode(byte[] ourKey, byte[] peerKey)
         {
+            return DeriveVerificationCode(ourKey, peerKey, null);
+        }
+
+        /// <summary>
+        /// Derive 6-digit verification code from both public keys and
+        /// optionally the server TLS certificate (DER bytes).
+        /// Binding the cert hash into the IKM prevents MITM cert substitution.
+        /// </summary>
+        public static string DeriveVerificationCode(byte[] ourKey, byte[] peerKey, byte[] serverCertDer)
+        {
             byte[][] sorted = new[] { ourKey, peerKey }
                 .OrderBy(k => k, new ByteArrayComparer())
                 .ToArray();
 
             byte[] ikm = Concat(sorted[0], sorted[1]);
+
+            // Bind server certificate into IKM if available
+            if (serverCertDer != null && serverCertDer.Length > 0)
+            {
+                byte[] certHash;
+                using (var sha = SHA256.Create())
+                {
+                    certHash = sha.ComputeHash(serverCertDer);
+                }
+                ikm = Concat(ikm, certHash);
+            }
 
             byte[] codeBytes = HkdfDeriveKey(ikm, 4, Protocol.VERIFY_SALT, Protocol.VERIFY_INFO);
 
@@ -151,28 +172,68 @@ namespace LuducatBridge
             return false;
         }
 
-        // ── Key Generation ───────────────────────────────────────────
+        // ── Key Generation (ECDSA P-256) ─────────────────────────────
 
         /// <summary>
-        /// Generate a 32-byte random key pair.
-        /// Note: This is a simplified key generation for the protocol.
-        /// In production with .NET 9+, use proper Ed25519.
+        /// Generate an ECDSA P-256 key pair for signing challenges.
+        /// Public key exported as uncompressed point (65 bytes: 0x04 || X || Y).
         /// </summary>
         public static KeyPair GenerateKeyPair()
         {
-            byte[] seed = new byte[32];
-            using (var rng = new RNGCryptoServiceProvider())
+            using (var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256))
             {
-                rng.GetBytes(seed);
+                var parameters = ecdsa.ExportParameters(true);
+                // Uncompressed point: 0x04 || X(32) || Y(32) = 65 bytes
+                byte[] publicKey = new byte[65];
+                publicKey[0] = 0x04;
+                Array.Copy(parameters.Q.X, 0, publicKey, 1, 32);
+                Array.Copy(parameters.Q.Y, 0, publicKey, 33, 32);
+                // Private key: D parameter (32 bytes)
+                byte[] privateKey = (byte[])parameters.D.Clone();
+
+                return new KeyPair(publicKey, privateKey, parameters);
             }
-            // Derive public key from seed via SHA-256
-            // (simplified — real Ed25519 uses curve math)
-            byte[] publicKey;
-            using (var sha = SHA256.Create())
+        }
+
+        // ── Signing / Verification ────────────────────────────────────
+
+        /// <summary>
+        /// Sign data with our ECDSA P-256 private key.
+        /// Returns the DER-encoded signature.
+        /// </summary>
+        public static byte[] Sign(ECParameters privateParams, byte[] data)
+        {
+            using (var ecdsa = ECDsa.Create(privateParams))
             {
-                publicKey = sha.ComputeHash(seed);
+                return ecdsa.SignData(data, HashAlgorithmName.SHA256);
             }
-            return new KeyPair(publicKey, seed);
+        }
+
+        /// <summary>
+        /// Verify an ECDSA P-256 signature against a public key
+        /// given as uncompressed point (65 bytes).
+        /// </summary>
+        public static bool Verify(byte[] publicKeyBytes, byte[] data, byte[] signature)
+        {
+            if (publicKeyBytes == null || publicKeyBytes.Length != 65 || publicKeyBytes[0] != 0x04)
+                return false;
+
+            var parameters = new ECParameters
+            {
+                Curve = ECCurve.NamedCurves.nistP256,
+                Q = new ECPoint
+                {
+                    X = new byte[32],
+                    Y = new byte[32],
+                },
+            };
+            Array.Copy(publicKeyBytes, 1, parameters.Q.X, 0, 32);
+            Array.Copy(publicKeyBytes, 33, parameters.Q.Y, 0, 32);
+
+            using (var ecdsa = ECDsa.Create(parameters))
+            {
+                return ecdsa.VerifyData(data, signature, HashAlgorithmName.SHA256);
+            }
         }
 
         /// <summary>
@@ -187,9 +248,22 @@ namespace LuducatBridge
             }
         }
 
+        /// <summary>
+        /// Generate 32 random bytes for a challenge.
+        /// </summary>
+        public static byte[] GenerateChallenge()
+        {
+            byte[] challenge = new byte[32];
+            using (var rng = new RNGCryptoServiceProvider())
+            {
+                rng.GetBytes(challenge);
+            }
+            return challenge;
+        }
+
         // ── Helpers ──────────────────────────────────────────────────
 
-        private static byte[] Concat(byte[] a, byte[] b)
+        internal static byte[] Concat(byte[] a, byte[] b)
         {
             byte[] result = new byte[a.Length + b.Length];
             Array.Copy(a, 0, result, 0, a.Length);
@@ -202,11 +276,13 @@ namespace LuducatBridge
     {
         public byte[] PublicKey { get; }
         public byte[] PrivateKey { get; }
+        public ECParameters ECParameters { get; }
 
-        public KeyPair(byte[] publicKey, byte[] privateKey)
+        public KeyPair(byte[] publicKey, byte[] privateKey, ECParameters ecParams)
         {
             PublicKey = publicKey;
             PrivateKey = privateKey;
+            ECParameters = ecParams;
         }
     }
 

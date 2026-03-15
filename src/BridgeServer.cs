@@ -110,7 +110,10 @@ namespace LuducatBridge
                     }
 
                     _logger.Info($"Accepted connection from {client.Client.RemoteEndPoint}");
-                    await HandleClient(client);
+                    // Fire-and-forget: don't block accept loop while a session is active.
+                    // HandleClient manages its own cleanup. _activeSession + _streamLock
+                    // handle concurrent access (new auth session closes the old one).
+                    _ = HandleClient(client);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -226,6 +229,11 @@ namespace LuducatBridge
                         try { _activeSession.Close(); } catch { }
                     _activeSession = sslStream;
                 }
+
+                // Read timeout: detect dead connections (NAT conntrack drop, VM
+                // network loss) within a reasonable window. SessionLoop's ReadMessage
+                // will throw IOException on timeout → returns null → session ends.
+                client.ReceiveTimeout = 120_000;  // 2 minutes
 
                 await SessionLoop(sslStream);
 

@@ -5,6 +5,7 @@ using Playnite.SDK.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows;
 using Newtonsoft.Json.Linq;
 
 namespace LuducatBridge
@@ -63,6 +64,33 @@ namespace LuducatBridge
                     playniteId: game.Id.ToString(),
                     gameName: game.Name,
                     installed: false);
+            }
+
+            // Confirmation gate — unless AlwaysAllow is checked, ask the user
+            if (!_settings.AlwaysAllow)
+            {
+                bool allowed = false;
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    var result = _api.Dialogs.ShowMessage(
+                        $"luducat wants to launch:\n\n{game.Name}\n\n(store: {store}, id: {storeId})\n\nAllow?",
+                        "luducat Bridge — Launch Request",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question
+                    );
+                    allowed = (result == MessageBoxResult.Yes);
+                });
+
+                if (!allowed)
+                {
+                    _logger.Info($"Launch denied by user: store={store}, id={storeId}");
+                    return CreateLaunchResult(nonce, "denied",
+                        playniteId: game.Id.ToString(),
+                        gameName: game.Name,
+                        installed: true,
+                        errorCode: ErrorCodes.PERMISSION_DENIED,
+                        errorMessage: "User denied the launch request");
+                }
             }
 
             try

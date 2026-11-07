@@ -51,7 +51,7 @@ The game running on Windows (left), launched from luducat on Linux (right):
 
 ## How It Works
 
-- Communication secured via **TLS 1.3** with **ECDSA P-256** key exchange
+- Communication secured via **TLS 1.2** with **ECDSA P-256** key exchange
 - Session management via **HMAC-TOTP** (silent reconnect without re-pairing)
 - Restricted to **RFC 1918 private addresses** (LAN only, no WAN exposure)
 - Pairing secrets and TLS certificates stored in **Windows Credential Manager**
